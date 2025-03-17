@@ -13,14 +13,14 @@ def list_directory_contents(directory_path):
     print()
 
 # Function to perform speech-to-text conversion
-def transcribe_audio(audio_file_path, model_name="base"):
+def transcribe_audio(audio_file_path, model_name="base", language="tr"):
     # Load the Whisper model
     print(f"Loading Whisper model: {model_name}")
     model = whisper.load_model(model_name)
     
     # Transcribe the audio
-    print(f"Transcribing file: {audio_file_path}")
-    result = model.transcribe(audio_file_path)
+    print(f"Transcribing file: {audio_file_path} in language: {language}")
+    result = model.transcribe(audio_file_path, language=language)
     
     return result["text"]
 
@@ -52,8 +52,14 @@ def main():
     if not model_name:
         model_name = "base"
     
+    # Ask user for the language
+    print("\nLanguage codes examples: tr (Turkish), en (English), fr (French), de (German)")
+    language = input("Enter the language code (or press Enter to use Turkish 'tr'): ")
+    if not language:
+        language = "tr"
+    
     # Perform transcription
-    transcription = transcribe_audio(audio_file, model_name)
+    transcription = transcribe_audio(audio_file, model_name, language)
     
     # Print and save the result
     print("\nTranscription result:")
