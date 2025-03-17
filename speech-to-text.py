@@ -1,76 +1,119 @@
-import os
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 import whisper
+import os
+import uuid
+import shutil
+from typing import List
+from pydantic import BaseModel
 
-# Function to list files in a directory
-def list_directory_contents(directory_path):
-    print(f"Contents of directory '{directory_path}':")
+app = FastAPI(
+    title="Speech-to-Text API with Whisper",
+    description="Turkish Speech-to-Text API using OpenAI's Whisper model"
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Create temporary directory for audio files
+TEMP_DIR = "temp_audio"
+os.makedirs(TEMP_DIR, exist_ok=True)
+
+# Available models
+MODELS = ["tiny", "base", "small", "medium", "large"]
+
+# Model cache to avoid reloading
+model_cache = {}
+
+class TranscriptionResponse(BaseModel):
+    text: str
+    filename: str
+    language: str
+    model: str
+
+def cleanup_file(file_path: str):
+    """Remove temporary file"""
+    if os.path.exists(file_path):
+        os.remove(file_path)
+
+@app.post("/transcribe/", response_model=TranscriptionResponse)
+async def transcribe_audio(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    model_name: str = Form("base"),
+    language: str = Form("tr")
+):
+    """
+    Transcribe an audio file using Whisper.
+    
+    - **file**: Audio file to transcribe (mp3, wav, etc.)
+    - **model_name**: Whisper model to use (default: base)
+    - **language**: Language code (default: tr for Turkish)
+    """
+    # Validate model name
+    if model_name not in MODELS:
+        raise HTTPException(status_code=400, detail=f"Model must be one of {MODELS}")
+    
+    # Generate a unique filename
+    file_ext = os.path.splitext(file.filename)[1].lower()
+    temp_file_path = f"{TEMP_DIR}/{uuid.uuid4()}{file_ext}"
+    
     try:
-        for item in os.listdir(directory_path):
-            print(f"- {item}")
-    except FileNotFoundError:
-        print(f"Directory '{directory_path}' not found. Creating it now.")
-        os.makedirs(directory_path)
-    print()
+        # Save the uploaded file
+        with open(temp_file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        # Add cleanup task
+        background_tasks.add_task(cleanup_file, temp_file_path)
+        
+        # Load model (with caching)
+        if model_name not in model_cache:
+            print(f"Loading Whisper model: {model_name}")
+            model_cache[model_name] = whisper.load_model(model_name)
+        
+        model = model_cache[model_name]
+        
+        # Transcribe audio
+        print(f"Transcribing file: {temp_file_path} in language: {language}")
+        result = model.transcribe(temp_file_path, language=language)
+        
+        return {
+            "text": result["text"],
+            "filename": file.filename,
+            "language": language,
+            "model": model_name
+        }
+        
+    except Exception as e:
+        # Ensure cleanup happens even on error
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
+        raise HTTPException(status_code=500, detail=f"Error during transcription: {str(e)}")
 
-# Function to perform speech-to-text conversion
-def transcribe_audio(audio_file_path, model_name="base", language="tr"):
-    # Load the Whisper model
-    print(f"Loading Whisper model: {model_name}")
-    model = whisper.load_model(model_name)
-    
-    # Transcribe the audio
-    print(f"Transcribing file: {audio_file_path} in language: {language}")
-    result = model.transcribe(audio_file_path, language=language)
-    
-    return result["text"]
+@app.get("/models/")
+async def get_available_models():
+    """Get a list of available Whisper models"""
+    return {"models": MODELS}
 
-# Main function
-def main():
-    # Specify the directory containing the audio file
-    directory_path = "audio_files"
-    
-    # Show the contents of the directory
-    list_directory_contents(directory_path)
-    
-    # Ask user for the audio file
-    audio_filename = input("Enter the name of your audio file (or press Enter to use 'speech.mp3'): ")
-    if not audio_filename:
-        audio_filename = "speech.mp3"
-    
-    audio_file = os.path.join(directory_path, audio_filename)
-    
-    # Check if file exists
-    if not os.path.exists(audio_file):
-        print(f"Warning: File '{audio_file}' does not exist.")
-        print(f"Please place your audio file in the '{directory_path}' directory and run the script again.")
-        return
-    
-    # Ask user for the model
-    print("\nAvailable models: tiny, base, small, medium, large")
-    print("Note: Larger models are more accurate but slower and require more RAM")
-    model_name = input("Enter the model name (or press Enter to use 'base'): ")
-    if not model_name:
-        model_name = "base"
-    
-    # Ask user for the language
-    print("\nLanguage codes examples: tr (Turkish), en (English), fr (French), de (German)")
-    language = input("Enter the language code (or press Enter to use Turkish 'tr'): ")
-    if not language:
-        language = "tr"
-    
-    # Perform transcription
-    transcription = transcribe_audio(audio_file, model_name, language)
-    
-    # Print and save the result
-    print("\nTranscription result:")
-    print(transcription)
-    
-    # Save to text file
-    output_file = os.path.splitext(audio_filename)[0] + "_transcription.txt"
-    with open(output_file, "w", encoding="utf-8") as f:
-        f.write(transcription)
-    
-    print(f"\nTranscription saved to {output_file}")
+@app.get("/health/")
+async def health_check():
+    """Check if the API is running and which models are loaded"""
+    return {
+        "status": "healthy",
+        "models_loaded": list(model_cache.keys())
+    }
+
+@app.get("/")
+async def root():
+    """API root"""
+    return {"message": "Speech-to-Text API with Whisper. Visit /docs for API documentation."}
 
 if __name__ == "__main__":
-    main()
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
